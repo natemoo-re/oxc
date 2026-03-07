@@ -1,0 +1,19 @@
+[package]
+name = "oxc_json"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Span-preserving JSONC parser for the oxc ecosystem"
+
+[lints]
+workspace = true
+
+[dependencies]
+oxc_allocator = { workspace = true }
+oxc_diagnostics = { workspace = true }
+oxc_span = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
