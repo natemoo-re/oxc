@@ -281,4 +281,206 @@ mod tests {
         let dot = exports.get_value(".").unwrap().as_object().unwrap();
         assert_eq!(dot.get_value("import").and_then(|v| v.as_str()), Some("./dist/index.mjs"));
     }
+
+    // --- Edge cases from json-strip-comments test suite ---
+
+    #[test]
+    fn unicode_in_strings() {
+        let source = r#"{"emoji": "hello 🌍", "cjk": "你好"}"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let obj = result.value.as_object().unwrap();
+        assert_eq!(obj.get_value("emoji").and_then(|v| v.as_str()), Some("hello 🌍"));
+        assert_eq!(obj.get_value("cjk").and_then(|v| v.as_str()), Some("你好"));
+    }
+
+    #[test]
+    fn unicode_in_comments() {
+        let source = "{\n  // 这是注释 🎉\n  \"key\": 1\n}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].value, " 这是注释 🎉");
+    }
+
+    #[test]
+    fn escaped_quotes_in_strings() {
+        // Simple escaped quote
+        let result = parse(r#""he said \"hi\"""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some(r#"he said \"hi\""#));
+
+        // Escaped backslash before quote: \\" means literal backslash + end of string
+        let result = parse(r#"{"a": "b\\"}"#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn comment_like_syntax_in_strings() {
+        // // inside a string should not be treated as a comment
+        let source = r#"{"url": "https://example.com"}"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(
+            result.value.as_object().unwrap().get_value("url").and_then(|v| v.as_str()),
+            Some("https://example.com")
+        );
+
+        // /* */ inside a string should not be treated as a comment
+        let source = r#"{"re": "a/* b */c"}"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(
+            result.value.as_object().unwrap().get_value("re").and_then(|v| v.as_str()),
+            Some("a/* b */c")
+        );
+    }
+
+    #[test]
+    fn unterminated_block_comment() {
+        let source = "{ /* never closed\n\"key\": 1 }";
+        let result = parse(source);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn empty_input() {
+        let result = parse("");
+        assert!(!result.errors.is_empty()); // should error on unexpected end
+    }
+
+    #[test]
+    fn whitespace_only_input() {
+        let result = parse("   \n\t  ");
+        assert!(!result.errors.is_empty()); // should error on unexpected end
+    }
+
+    #[test]
+    fn comment_only_input() {
+        let result = parse("// just a comment");
+        assert!(!result.errors.is_empty()); // no value found
+    }
+
+    #[test]
+    fn comments_before_colon() {
+        let source = "{ \"key\" /* comment */ : \"value\" }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let obj = result.value.as_object().unwrap();
+        assert_eq!(obj.get_value("key").and_then(|v| v.as_str()), Some("value"));
+        assert_eq!(result.comments.len(), 1);
+    }
+
+    #[test]
+    fn comments_after_value() {
+        let source = "{ \"key\": \"value\" /* after */ }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+    }
+
+    #[test]
+    fn comment_at_eof() {
+        let source = "{\"a\": 1}\n// trailing";
+        let result = parse(source);
+        // Should parse the object successfully, comment is after the value
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+    }
+
+    #[test]
+    fn consecutive_comments() {
+        let source = "{\n  // first\n  // second\n  /* third */\n  \"key\": 1\n}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 3);
+    }
+
+    #[test]
+    fn nested_comment_like_syntax() {
+        // /* inside a // comment
+        let source = "{\n  // has /* nested\n  \"a\": 1\n}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].value, " has /* nested");
+
+        // // inside a /* */ comment
+        let source = "{ /* has // nested */ \"a\": 1 }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].value, " has // nested ");
+    }
+
+    #[test]
+    fn crlf_line_endings() {
+        let source = "{\r\n  \"key\": \"value\"\r\n}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let obj = result.value.as_object().unwrap();
+        assert_eq!(obj.get_value("key").and_then(|v| v.as_str()), Some("value"));
+    }
+
+    #[test]
+    fn crlf_with_line_comment() {
+        let source = "{\r\n  // comment\r\n  \"key\": 1\r\n}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.comments.len(), 1);
+    }
+
+    #[test]
+    fn deeply_nested() {
+        let source = r#"{"a": {"b": {"c": {"d": [1, [2, [3]]]}}}}"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn empty_string_value() {
+        let result = parse(r#""""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some(""));
+        assert_eq!(result.value.span().start, 0);
+        assert_eq!(result.value.span().end, 2);
+    }
+
+    #[test]
+    fn negative_and_fractional_numbers() {
+        let cases = [
+            ("-0", -0.0_f64),
+            ("0.5", 0.5),
+            ("-0.5", -0.5),
+            ("1e2", 100.0),
+            ("1E2", 100.0),
+            ("1e+2", 100.0),
+            ("1e-2", 0.01),
+            ("-1.5e10", -1.5e10),
+        ];
+        for (input, expected) in cases {
+            let result = parse(input);
+            assert!(result.errors.is_empty(), "{input}: {:?}", result.errors);
+            if let JsonValue::Number(n) = &result.value {
+                let parsed = n.as_f64().unwrap();
+                assert!(
+                    (parsed - expected).abs() < f64::EPSILON || (parsed.is_nan() && expected.is_nan()),
+                    "{input}: expected {expected}, got {parsed}"
+                );
+            } else {
+                panic!("{input}: expected number");
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_commas_strict() {
+        // Trailing comma in array
+        let result = parse_json("[1, 2, 3,]");
+        assert!(!result.errors.is_empty());
+
+        // Trailing comma in object
+        let result = parse_json(r#"{"a": 1, "b": 2,}"#);
+        assert!(!result.errors.is_empty());
+    }
 }
