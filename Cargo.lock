@@ -1985,6 +1985,7 @@ dependencies = [
  "oxc_allocator",
  "oxc_diagnostics",
  "oxc_span",
+ "serde_json",
 ]
 
 [[package]]

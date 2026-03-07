@@ -1,5 +1,7 @@
 mod ast;
 mod parser;
+#[cfg(feature = "serde")]
+mod serde;
 
 pub use ast::*;
 pub use parser::{JsonParseOptions, JsonParseReturn, JsonParser};
