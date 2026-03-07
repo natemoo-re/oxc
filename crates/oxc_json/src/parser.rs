@@ -379,6 +379,10 @@ impl<'a> JsonParser<'a> {
         // Integer part
         if self.peek() == Some(b'0') {
             self.advance();
+            // Leading zeros are not allowed in JSON (e.g., 007).
+            if matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.error("Leading zeros are not allowed", start, self.pos + 1);
+            }
         } else {
             self.consume_digits();
         }

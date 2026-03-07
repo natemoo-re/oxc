@@ -602,6 +602,36 @@ mod tests {
         }
     }
 
+    // --- Number edge case tests ---
+
+    #[test]
+    fn leading_zeros_rejected() {
+        let result = parse("007");
+        assert!(!result.errors.is_empty());
+
+        let result = parse("00");
+        assert!(!result.errors.is_empty());
+
+        let result = parse("-007");
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn zero_is_valid() {
+        let result = parse("0");
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        let result = parse("-0");
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        // 0 followed by fraction or exponent is fine
+        let result = parse("0.5");
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+
+        let result = parse("0e1");
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
     #[test]
     fn lone_backslash_at_end() {
         let result = parse("\"hello\\");
