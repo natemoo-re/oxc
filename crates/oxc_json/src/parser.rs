@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::Span;
 
@@ -207,42 +209,163 @@ impl<'a> JsonParser<'a> {
         self.expect(b'"');
 
         let content_start = self.pos;
-        let mut has_escapes = false;
+
+        // Fast path: scan for end quote, checking if any escapes exist.
+        let has_escapes = loop {
+            match self.peek() {
+                Some(b'"') => break false,
+                Some(b'\\') => break true,
+                Some(_) => self.pos += 1,
+                None => {
+                    self.error("Unterminated string", start, self.pos);
+                    let raw = &self.source[content_start..self.pos];
+                    return JsonString {
+                        span: Span::new(start as u32, self.pos as u32),
+                        raw,
+                        value: Cow::Borrowed(raw),
+                    };
+                }
+            }
+        };
+
+        if !has_escapes {
+            // No escapes — borrow directly from source.
+            let content_end = self.pos;
+            self.advance(); // consume closing quote
+            let raw = &self.source[content_start..content_end];
+            return JsonString {
+                span: Span::new(start as u32, self.pos as u32),
+                raw,
+                value: Cow::Borrowed(raw),
+            };
+        }
+
+        // Slow path: build unescaped string.
+        // Copy the portion we already scanned (before the first backslash).
+        let mut buf = String::from(&self.source[content_start..self.pos]);
 
         loop {
             match self.peek() {
                 Some(b'"') => {
-                    let content_end = self.pos;
+                    let raw = &self.source[content_start..self.pos];
                     self.advance(); // consume closing quote
-                    let span = Span::new(start as u32, self.pos as u32);
-
-                    let value = if has_escapes {
-                        // For now, return the raw escaped content.
-                        // A full implementation would unescape here.
-                        &self.source[content_start..content_end]
-                    } else {
-                        &self.source[content_start..content_end]
+                    return JsonString {
+                        span: Span::new(start as u32, self.pos as u32),
+                        raw,
+                        value: Cow::Owned(buf),
                     };
-
-                    return JsonString { span, value };
                 }
                 Some(b'\\') => {
-                    has_escapes = true;
                     self.advance(); // consume backslash
-                    self.advance(); // consume escaped char
+                    match self.peek() {
+                        Some(b'"') => { buf.push('"'); self.advance(); }
+                        Some(b'\\') => { buf.push('\\'); self.advance(); }
+                        Some(b'/') => { buf.push('/'); self.advance(); }
+                        Some(b'b') => { buf.push('\u{0008}'); self.advance(); }
+                        Some(b'f') => { buf.push('\u{000C}'); self.advance(); }
+                        Some(b'n') => { buf.push('\n'); self.advance(); }
+                        Some(b'r') => { buf.push('\r'); self.advance(); }
+                        Some(b't') => { buf.push('\t'); self.advance(); }
+                        Some(b'u') => {
+                            self.advance(); // consume 'u'
+                            let cp = self.parse_hex4();
+                            match cp {
+                                Some(high @ 0xD800..=0xDBFF) => {
+                                    // High surrogate — expect low surrogate.
+                                    if self.eat(b'\\') && self.eat(b'u') {
+                                        if let Some(low @ 0xDC00..=0xDFFF) = self.parse_hex4() {
+                                            let combined = 0x10000
+                                                + ((high as u32 - 0xD800) << 10)
+                                                + (low as u32 - 0xDC00);
+                                            if let Some(c) = char::from_u32(combined) {
+                                                buf.push(c);
+                                            } else {
+                                                self.error("Invalid surrogate pair", self.pos - 12, self.pos);
+                                            }
+                                        } else {
+                                            self.error("Expected low surrogate (\\uDC00-\\uDFFF)", self.pos - 6, self.pos);
+                                        }
+                                    } else {
+                                        self.error("Unpaired high surrogate", self.pos - 6, self.pos);
+                                    }
+                                }
+                                Some(0xDC00..=0xDFFF) => {
+                                    self.error("Unpaired low surrogate", self.pos - 4, self.pos);
+                                }
+                                Some(cp) => {
+                                    if let Some(c) = char::from_u32(cp as u32) {
+                                        buf.push(c);
+                                    } else {
+                                        self.error("Invalid unicode code point", self.pos - 4, self.pos);
+                                    }
+                                }
+                                None => {
+                                    // Error already reported by parse_hex4
+                                }
+                            }
+                        }
+                        Some(c) => {
+                            self.error(
+                                &format!("Invalid escape sequence '\\{}'", char::from(c)),
+                                self.pos - 1,
+                                self.pos + 1,
+                            );
+                            buf.push(char::from(c));
+                            self.advance();
+                        }
+                        None => {
+                            let raw = &self.source[content_start..self.pos];
+                            self.error("Unterminated string", start, self.pos);
+                            return JsonString {
+                                span: Span::new(start as u32, self.pos as u32),
+                                raw,
+                                value: Cow::Owned(buf),
+                            };
+                        }
+                    }
                 }
                 Some(_) => {
-                    self.advance();
+                    // Accumulate regular characters. Handle multi-byte UTF-8 correctly
+                    // by slicing from the source rather than byte-at-a-time.
+                    let ch_start = self.pos;
+                    self.pos += 1;
+                    // Continue past continuation bytes.
+                    while self.pos < self.source.len()
+                        && self.bytes[self.pos] & 0xC0 == 0x80
+                    {
+                        self.pos += 1;
+                    }
+                    buf.push_str(&self.source[ch_start..self.pos]);
                 }
                 None => {
+                    let raw = &self.source[content_start..self.pos];
                     self.error("Unterminated string", start, self.pos);
                     return JsonString {
                         span: Span::new(start as u32, self.pos as u32),
-                        value: &self.source[content_start..self.pos],
+                        raw,
+                        value: Cow::Owned(buf),
                     };
                 }
             }
         }
+    }
+
+    /// Parse exactly 4 hex digits, returning the u16 value.
+    fn parse_hex4(&mut self) -> Option<u16> {
+        let start = self.pos;
+        let mut value: u16 = 0;
+        for _ in 0..4 {
+            match self.peek() {
+                Some(c @ b'0'..=b'9') => { value = value * 16 + (c - b'0') as u16; self.advance(); }
+                Some(c @ b'a'..=b'f') => { value = value * 16 + (c - b'a' + 10) as u16; self.advance(); }
+                Some(c @ b'A'..=b'F') => { value = value * 16 + (c - b'A' + 10) as u16; self.advance(); }
+                _ => {
+                    self.error("Expected 4 hex digits after \\u", start, self.pos);
+                    return None;
+                }
+            }
+        }
+        Some(value)
     }
 
     fn parse_number(&mut self) -> JsonNumber<'a> {

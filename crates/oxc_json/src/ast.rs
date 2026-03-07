@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use oxc_span::Span;
 
 /// A parsed JSON value with source span information.
@@ -39,7 +41,7 @@ impl JsonValue<'_> {
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Self::String(s) => Some(s.value),
+            Self::String(s) => Some(&s.value),
             _ => None,
         }
     }
@@ -62,7 +64,7 @@ pub struct JsonObject<'a> {
 impl<'a> JsonObject<'a> {
     /// Get a property by key name.
     pub fn get(&self, key: &str) -> Option<&JsonProperty<'a>> {
-        self.properties.iter().find(|p| p.key.value == key)
+        self.properties.iter().find(|p| p.key.value.as_ref() == key)
     }
 
     /// Get the value of a property by key name.
@@ -92,8 +94,11 @@ pub struct JsonProperty<'a> {
 pub struct JsonString<'a> {
     /// Span covering the entire string including quotes.
     pub span: Span,
-    /// The unescaped string value (without quotes).
-    pub value: &'a str,
+    /// The raw string content between quotes (preserves escape sequences as written).
+    pub raw: &'a str,
+    /// The decoded string value (escape sequences resolved).
+    /// Borrows from source when no escape sequences are present.
+    pub value: Cow<'a, str>,
 }
 
 /// A JSON number value with its source span.

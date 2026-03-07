@@ -133,8 +133,7 @@ mod tests {
         let source = r#""hello \"world\"""#;
         let result = parse(source);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        // The value includes the raw escape sequences for now
-        assert_eq!(result.value.as_str(), Some(r#"hello \"world\""#));
+        assert_eq!(result.value.as_str(), Some("hello \"world\""));
     }
 
     #[test]
@@ -308,11 +307,15 @@ mod tests {
         // Simple escaped quote
         let result = parse(r#""he said \"hi\"""#);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert_eq!(result.value.as_str(), Some(r#"he said \"hi\""#));
+        assert_eq!(result.value.as_str(), Some("he said \"hi\""));
 
         // Escaped backslash before quote: \\" means literal backslash + end of string
         let result = parse(r#"{"a": "b\\"}"#);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(
+            result.value.as_object().unwrap().get_value("a").and_then(|v| v.as_str()),
+            Some("b\\")
+        );
     }
 
     #[test]
@@ -471,6 +474,138 @@ mod tests {
                 panic!("{input}: expected number");
             }
         }
+    }
+
+    // --- String escape tests ---
+
+    #[test]
+    fn escape_sequences() {
+        let cases = [
+            (r#""\n""#, "\n"),
+            (r#""\r""#, "\r"),
+            (r#""\t""#, "\t"),
+            (r#""\\""#, "\\"),
+            (r#""\/""#, "/"),
+            (r#""\b""#, "\u{0008}"),
+            (r#""\f""#, "\u{000C}"),
+        ];
+        for (input, expected) in cases {
+            let result = parse(input);
+            assert!(result.errors.is_empty(), "{input}: {:?}", result.errors);
+            assert_eq!(result.value.as_str(), Some(expected), "input: {input}");
+        }
+    }
+
+    #[test]
+    fn unicode_escape_bmp() {
+        // Basic Multilingual Plane
+        let result = parse(r#""\u0041""#); // 'A'
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("A"));
+
+        let result = parse(r#""\u00e9""#); // 'é'
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("é"));
+
+        let result = parse(r#""\u0000""#); // null char
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("\0"));
+    }
+
+    #[test]
+    fn unicode_surrogate_pairs() {
+        // 𝄞 (U+1D11E MUSICAL SYMBOL G CLEF)
+        let result = parse(r#""\uD834\uDD1E""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("𝄞"));
+
+        // 😀 (U+1F600)
+        let result = parse(r#""\uD83D\uDE00""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("😀"));
+    }
+
+    #[test]
+    fn unpaired_high_surrogate() {
+        let result = parse(r#""\uD800""#);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn unpaired_low_surrogate() {
+        let result = parse(r#""\uDC00""#);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn invalid_hex_escape() {
+        let result = parse(r#""\u00GG""#);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn incomplete_unicode_escape() {
+        let result = parse(r#""\u00""#);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn invalid_escape_character() {
+        let result = parse(r#""\q""#);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn mixed_escapes_and_text() {
+        let result = parse(r#""hello\nworld\t!""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.value.as_str(), Some("hello\nworld\t!"));
+    }
+
+    #[test]
+    fn no_escape_borrows_from_source() {
+        let result = parse(r#""hello world""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let JsonValue::String(s) = &result.value {
+            assert!(matches!(s.value, std::borrow::Cow::Borrowed(_)));
+            assert_eq!(s.raw, "hello world");
+            assert_eq!(s.value.as_ref(), "hello world");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn escape_produces_owned() {
+        let result = parse(r#""hello\nworld""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let JsonValue::String(s) = &result.value {
+            assert!(matches!(s.value, std::borrow::Cow::Owned(_)));
+            // raw preserves the escape as written
+            assert_eq!(s.raw, r#"hello\nworld"#);
+            // value is decoded
+            assert_eq!(s.value.as_ref(), "hello\nworld");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn raw_preserves_unicode_escapes() {
+        let result = parse(r#""\u0041\u0042""#);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let JsonValue::String(s) = &result.value {
+            assert_eq!(s.raw, r#"\u0041\u0042"#);
+            assert_eq!(s.value.as_ref(), "AB");
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn lone_backslash_at_end() {
+        let result = parse("\"hello\\");
+        assert!(!result.errors.is_empty());
     }
 
     #[test]
