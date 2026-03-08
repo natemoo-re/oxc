@@ -1978,6 +1978,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxc_json"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "oxc_allocator",
+ "oxc_diagnostics",
+ "oxc_span",
+]
+
+[[package]]
 name = "oxc_language_server"
 version = "1.41.0"
 dependencies = [
@@ -2517,6 +2527,21 @@ dependencies = [
  "oxc_str",
  "oxc_syntax",
  "rustc-hash",
+]
+
+[[package]]
+name = "oxc_trench"
+version = "0.1.0"
+dependencies = [
+ "fast-glob",
+ "insta",
+ "oxc_allocator",
+ "oxc_diagnostics",
+ "oxc_parser",
+ "oxc_resolver",
+ "oxc_span",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3604,6 +3629,16 @@ dependencies = [
  "thread_local",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trench"
+version = "0.1.0"
+dependencies = [
+ "oxc-miette",
+ "oxc_diagnostics",
+ "oxc_trench",
+ "serde_json",
 ]
 
 [[package]]
